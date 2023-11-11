@@ -1,0 +1,192 @@
+# Configuration for the Flatcar VM, with support for terraform template substitution.
+#
+# see
+#   - https://coreos.github.io/butane/config-flatcar-v1_1/
+#   - https://coreos.github.io/butane/config-flatcar-v1_0/
+#   - https://coreos.github.io/butane/
+#
+version: 1.0.0
+variant: flatcar
+
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFkyaM9D4TtCOSdIR8JvH5DCt0UHbfPGx7VlSJrP593N greg-ed25519
+    - name: hub
+      uid: 13001
+      primary_group: hub
+      no_create_home: true
+  groups:
+    - name: hub
+      gid: 13001
+
+storage:
+  directories:
+    - path: /var/lib/hub/data
+      mode: 0750
+      user:
+        name: hub
+      group:
+        name: hub
+    - path: /var/lib/hub/logs
+      mode: 0750
+      user:
+        name: hub
+      group:
+        name: hub
+    - path: /var/lib/hub/conf
+      mode: 0750
+      user:
+        name: hub
+      group:
+        name: hub
+    - path: /var/lib/hub/backups
+      mode: 0750
+      user:
+        name: hub
+      group:
+        name: hub
+
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: ${vm_name}
+
+    # Docker compose for Jetbrains Hub
+    #
+    # see:
+    #  - https://www.jetbrains.com/help/datalore/use-hub-for-docker-installation.html
+    #  - https://hub.docker.com/r/jetbrains/hub/
+    - path: /etc/docker-compose.yaml
+      mode: 0444
+      contents:
+        inline: |
+          ---
+          version: "2.1"
+          services:
+            hub:
+              image: jetbrains/hub:2023.2.20300
+              network_mode: host
+              ports:
+                - "8080:8080"
+              environment:
+                - TZ=Pacific/Auckland
+              volumes:
+                - "/var/lib/hub/data:/opt/hub/data"
+                - "/var/lib/hub/conf:/opt/hub/conf"
+                - "/var/lib/hub/logs:/opt/hub/logs"
+                - "/var/lib/hub/backups:/opt/hub/backups"
+              restart: unless-stopped
+
+    - path: /etc/systemd/network/10-eth0.network
+      contents:
+        inline: |
+          [Match]
+          Name=eth0
+          
+          [Link]
+          MTUBytes=9000
+
+          [Network]
+          Address=10.20.21.3/24
+          Gateway=10.20.21.1
+          IPv6AcceptRA=yes
+          
+          [IPv6AcceptRA]
+          Token=static:::3
+
+    # Locks down the ssh daemon.
+    #
+    # see:
+    #  - https://www.flatcar.org/docs/latest/setup/security/customizing-sshd/
+    - path: /etc/ssh/sshd_config
+      overwrite: true
+      mode: 0600
+      contents:
+        inline: |
+          # Use most defaults for sshd configuration.
+          Subsystem sftp internal-sftp
+          UseDNS no
+
+          PermitRootLogin no
+          AllowUsers core pages
+          AuthenticationMethods publickey        
+  
+systemd:
+  units:
+    - name: var-lib-hub.mount
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Data for Jetbrains Hub
+        
+        [Mount]
+        What=hub-data
+        Where=/var/lib/hub
+        Type=9p
+        Options=trans=virtio
+        
+        [Install]
+        WantedBy=local-fs.target
+
+    # Use host networking, so disable the bridge and iptables/NAT
+    - name: docker.service
+      enabled: true
+      dropins:
+        - name: 10-ipv6.conf
+          contents: |
+            [Service]
+            # Environment="DOCKER_OPTS=--ipv6"
+            Environment="DOCKER_OPTS=--bridge=none --iptables=false --ip-masq=false"
+        
+
+    # 'docker compose' (v2) is not part of flatcar, so add it. This needs to be done
+    # after the network comes up, so do it via a systemd unit rather than a 'file' entry.
+    #
+    # WARNING: this doesn't install the cli plugin correctly, as it would need to be
+    # installed on '/usr' which is read-only. So docker compose must be used via
+    # `docker-compose` (i.e. with the hyphen).
+    #
+    # TODO: put this into a `.service` file when v1.1.0 ignition files are supported
+    # TODO: consider using a sysext
+    #
+    # see
+    #  - https://github.com/flatcar/Flatcar/issues/894#issuecomment-1318414513
+    #  - https://github.com/docker/compose
+    - name: docker-compose-install.service
+      enabled: true
+      contents: |
+        [Unit]
+        Wants=network-online.target
+        After=network.target network-online.target
+        ConditionFileIsExecutable=!/opt/bin/docker-compose
+        
+        [Service]
+        Environment=SOURCE_URL=https://github.com/docker/compose/releases/download/v2.21.0/docker-compose-linux-x86_64
+        Environment=VERIFICATION=08e549924823e97a3ea303c2309b812dfd5223b8be5ff96fe41bf75181ce0977
+        Type=oneshot
+        RemainAfterExit=True
+        ExecStart=/usr/bin/curl --location --no-progress-meter --output /opt/bin/docker-compose~ "$${SOURCE_URL}"
+        ExecStart=/bin/sh -c "echo \"$${VERIFICATION} /opt/bin/docker-compose~\" | /usr/bin/sha256sum --check --status"
+        ExecStart=/usr/bin/chmod +x /opt/bin/docker-compose~
+        ExecStart=/usr/bin/mv /opt/bin/docker-compose~ /opt/bin/docker-compose
+        
+        [Install]
+        WantedBy=multi-user.target
+
+    # hub
+    - name: hub.service
+      enabled: true
+      contents: |
+        [Unit]
+        After=docker.service docker-compose-install.service
+        Requires=docker.service docker-compose-install.service
+        
+        [Service]
+        ExecStartPre=/usr/bin/chown hub:hub /var/lib/hub/data /var/lib/hub/conf /var/lib/hub/logs /var/lib/hub/backups
+        ExecStart=/opt/bin/docker-compose -f /etc/docker-compose.yaml up
+        
+        [Install]
+        WantedBy=multi-user.target
