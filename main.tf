@@ -12,7 +12,7 @@ terraform {
 */
 module "ochre" {
   source        = "lucidsolns/proxmox/vm"
-  version       = ">= 0.0.6"
+  version       = ">= 0.0.13"
   vm_id         = 140
   name          = "ochre.lucidsolutions.co.nz"
   description   = <<-EOT
