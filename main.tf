@@ -26,6 +26,7 @@ module "ochre" {
   pm_password   = var.pm_password
   template_name = "flatcar-production-qemu-stable-3602.2.3"
   butane_conf   = "${path.module}/jetbrains-hub.bu.tftpl"
+  butane_path   = "${path.module}/config"
   memory        = 4096
   networks      = [{ bridge = var.bridge, tag = 121 }]
   plan9fs       = [

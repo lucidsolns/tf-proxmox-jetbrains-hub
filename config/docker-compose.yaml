@@ -1,0 +1,21 @@
+---
+# Docker compose for Jetbrains Hub
+#
+# see:
+#  - https://www.jetbrains.com/help/datalore/use-hub-for-docker-installation.html
+#  - https://hub.docker.com/r/jetbrains/hub/
+version: "2.1"
+services:
+  hub:
+    image: jetbrains/hub:2023.2.20300
+    network_mode: host
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=Pacific/Auckland
+    volumes:
+      - "/var/lib/hub/data:/opt/hub/data"
+      - "/var/lib/hub/conf:/opt/hub/conf"
+      - "/var/lib/hub/logs:/opt/hub/logs"
+      - "/var/lib/hub/backups:/opt/hub/backups"
+    restart: unless-stopped
